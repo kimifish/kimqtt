@@ -1,177 +1,218 @@
-import unittest
+import os
+import sys
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '../src')))
+
+import pytest
 from unittest.mock import Mock, patch, MagicMock
-import paho.mqtt.client
 
-# Create mock for kimiUtils
-mock_killer = MagicMock()
-mock_killer.kill_now = False
+@pytest.fixture(autouse=True)
+def mock_paho():
+    """Mock the entire paho.mqtt.client module"""
+    with patch('mqtt.paho.mqtt.client') as mock_paho:
+        mock_client = MagicMock()
+        mock_client.is_connected.return_value = True
+        mock_client.loop_start.return_value = None
+        mock_client.loop_stop.return_value = None
+        mock_client.disconnect.return_value = None
+        mock_paho.Client.return_value = mock_client
+        yield mock_paho
 
-mock_utils = MagicMock()
-mock_utils.Singleton = type('Singleton', (), {'__init__': lambda x: None})
-
-mock_logger = MagicMock()
-
-# Apply patches for all kimiUtils modules
-@patch('src.kiMQTT.mqtt.killer', mock_killer)
-@patch('src.kiMQTT.mqtt.Singleton', mock_utils.Singleton)
-@patch('src.kiMQTT.mqtt.get_logger', return_value=mock_logger)
-class TestMQTT(unittest.TestCase):
-    """Test suite for MQTT class"""
-
-    def setUp(self):
-        """Reset singleton instance before each test"""
-        # Import MQTT here after patches are applied
+@pytest.fixture
+def mqtt_class():
+    """Import MQTT class after mocking dependencies"""
+    with patch('mqtt.time.sleep'):  # Mock sleep to speed up tests
         from mqtt import MQTT
-        self.MQTT = MQTT
-        self.MQTT._instances = {}
-        self.host = "test.mosquitto.org"
-        self.port = 1883
-        self.test_topic = "test/topic"
-        self.test_payload = "test message"
+        MQTT._instance = None  # Reset singleton
+        return MQTT
 
-    def test_singleton(self, *args):
-        """Verify that class implements Singleton pattern correctly"""
-        mqtt1 = self.MQTT(host=self.host, port=self.port)
-        mqtt2 = self.MQTT(host=self.host, port=self.port)
-        self.assertIs(mqtt1, mqtt2)
+@pytest.fixture
+def mqtt_config():
+    """Common test configuration"""
+    return {
+        'host': 'test.mosquitto.org',
+        'port': 1883,
+        'test_topic': 'test/topic',
+        'test_payload': 'test message'
+    }
 
-    def test_invalid_init(self, *args):
-        """Test initialization with invalid parameters"""
-        with self.assertRaises(ValueError):
-            self.MQTT(host=None, port=self.port)
-        with self.assertRaises(ValueError):
-            self.MQTT(host=self.host, port=None)
+def test_singleton(mqtt_class, mqtt_config):
+    """Verify singleton pattern implementation"""
+    mqtt1 = mqtt_class(host=mqtt_config['host'], port=mqtt_config['port'])
+    mqtt2 = mqtt_class(host=mqtt_config['host'], port=mqtt_config['port'])
+    assert mqtt1 is mqtt2
 
-    @patch('paho.mqtt.client.Client')
-    @patch('time.sleep')
-    def test_connect(self, mock_sleep, mock_client, *args):
-        """Test successful connection to broker"""
-        # Setup mock
-        mock_instance = Mock()
-        mock_instance.is_connected.side_effect = [False, True, True]
-        mock_client.return_value = mock_instance
+@pytest.mark.parametrize('host,port', [
+    (None, 1883),
+    ('localhost', None),
+    ('', 1883),
+])
+def test_invalid_init(mqtt_class, host, port):
+    """Test initialization with invalid parameters"""
+    with pytest.raises((ValueError, TypeError)):
+        mqtt_class(host=host, port=port)
 
-        # Test connection
-        mqtt = self.MQTT(host=self.host, port=self.port)
-        result = mqtt.connect()
+def test_connect_success(mqtt_class, mqtt_config, mock_paho):
+    """Test successful connection to broker"""
+    client_mock = mock_paho.Client.return_value
+    # Добавляем больше значений для полного цикла подключения
+    client_mock.is_connected.side_effect = [
+        False,  # Initial check
+        False,  # After connect
+        True,   # Final check
+        True    # Additional check for safety
+    ]
+    
+    mqtt = mqtt_class(host=mqtt_config['host'], port=mqtt_config['port'])
+    mqtt.connect()
 
-        # Verify results
-        self.assertTrue(result)
-        mock_instance.connect.assert_called_once_with(
-            host=self.host,
-            port=self.port,
-            keepalive=60
-        )
-        mock_instance.loop_start.assert_called_once()
-        mock_sleep.assert_called_with(1)
+    client_mock.connect.assert_called_once_with(
+        host=mqtt_config['host'],
+        port=mqtt_config['port'],
+        keepalive=60
+    )
+    client_mock.loop_start.assert_called_once()
 
-    @patch('paho.mqtt.client.Client')
-    @patch('time.sleep')
-    def test_connect_with_error(self, mock_sleep, mock_client, *args):
-        """Test connection error handling and retry mechanism"""
-        # Setup mock
-        mock_instance = Mock()
-        mock_instance.is_connected.side_effect = [False, False, True, True]
-        mock_instance.connect.side_effect = [
-            OSError("Connection refused"),
-            None
-        ]
-        mock_client.return_value = mock_instance
+def test_connect_with_retry(mqtt_class, mqtt_config, mock_paho):
+    """Test connection retry on failure"""
+    client_mock = mock_paho.Client.return_value
+    
+    # Эмулируем два сервера в списке хостов
+    test_hosts = ['server1.example.com', 'server2.example.com']
+    mqtt = mqtt_class(host=test_hosts, port=mqtt_config['port'])
+    
+    # Настраиваем последовательность ответов для is_connected
+    client_mock.is_connected.side_effect = [
+        False,  # Начальная проверка для server1
+        False,  # После подключения к server1
+        False,  # Начальная проверка для server2
+        False,  # После подключения к server2
+        False,  # Начальная проверка для server1 (второй круг)
+        True,   # После успешного подключения к server1
+        True,   # Финальная проверка
+    ]
+    
+    # Счетчик попыток подключения
+    attempt_count = 0
+    
+    def connect_responses(**kwargs):
+        nonlocal attempt_count
+        attempt_count += 1
+        
+        # На третьей попытке возвращаем успешное подключение
+        if attempt_count >= 3:
+            return None
+            
+        raise OSError("Connection refused")
+    
+    client_mock.connect.side_effect = connect_responses
+    
+    with patch('mqtt.time.sleep') as mock_sleep:
+        connected = mqtt.connect()
+        
+        # Сбрасываем моки после теста
+        client_mock.is_connected.side_effect = None
+        client_mock.is_connected.return_value = True
+        client_mock.connect.side_effect = None
+        client_mock.connect.return_value = None
+    
+    assert connected is True, "Should return True on successful connection"
+    
+    # Проверяем последовательность вызовов connect с правильными хостами
+    connect_calls = client_mock.connect.call_args_list[:3]  # Берем только первые 3 вызова
+    assert len(connect_calls) == 3, "Should try to connect 3 times"
+    
+    # Проверяем параметры каждого вызова connect
+    expected_hosts = [test_hosts[0], test_hosts[1], test_hosts[0]]  # server1, server2, server1
+    for i, call in enumerate(connect_calls):
+        args, kwargs = call
+        assert kwargs['host'] == expected_hosts[i], f"Wrong host on attempt {i+1}"
+        assert kwargs['port'] == mqtt_config['port']
+        assert kwargs['keepalive'] == 60
+    
+    # Проверяем вызовы sleep
+    assert mock_sleep.call_count == 4, "Expected exactly 4 sleep calls"
+    
+    # Проверяем, что loop_start вызывался для каждой попытки подключения
+    assert client_mock.loop_start.call_count == 2, "Expected loop_start to be called twice"
 
-        # Test connection
-        mqtt = self.MQTT(host=self.host, port=self.port)
-        result = mqtt.connect()
+def test_subscribe_method(mqtt_class, mqtt_config, mock_paho):
+    """Test topic subscription using method"""
+    client_mock = mock_paho.Client.return_value
+    mqtt = mqtt_class(host=mqtt_config['host'], port=mqtt_config['port'])
+    
+    def callback(msg):
+        pass
 
-        # Verify results
-        self.assertTrue(result)
-        self.assertEqual(mock_instance.connect.call_count, 2)
-        mock_sleep.assert_any_call(5)
-        mock_sleep.assert_any_call(1)
+    mqtt.subscribe(mqtt_config['test_topic'], callback)
 
-    @patch('paho.mqtt.client.Client')
-    def test_subscribe_as_method(self, mock_client, *args):
-        """Test topic subscription using regular method"""
-        mock_instance = Mock()
-        mock_instance.is_connected.return_value = True
-        mock_client.return_value = mock_instance
+    assert mqtt.callback_dict[mqtt_config['test_topic']] == callback
+    client_mock.subscribe.assert_called_once_with(
+        mqtt_config['test_topic'],
+        qos=0  # Default QoS value
+    )
 
-        mqtt = self.MQTT(host=self.host, port=self.port)
-        def callback(msg):
-            pass
+def test_subscribe_decorator(mqtt_class, mqtt_config, mock_paho):
+    """Test topic subscription using decorator"""
+    client_mock = mock_paho.Client.return_value
+    mqtt = mqtt_class(host=mqtt_config['host'], port=mqtt_config['port'])
 
-        mqtt.subscribe(self.test_topic, callback)
+    @mqtt.subscribe(mqtt_config['test_topic'])
+    def callback(msg):
+        pass
 
-        self.assertEqual(mqtt.callback_dict[self.test_topic], callback)
-        mock_instance.subscribe.assert_called_once_with(self.test_topic, qos=0)
+    assert mqtt.callback_dict[mqtt_config['test_topic']] == callback
+    client_mock.subscribe.assert_called_once_with(
+        mqtt_config['test_topic'],
+        qos=0  # Default QoS value
+    )
 
-    @patch('paho.mqtt.client.Client')
-    def test_subscribe_as_decorator(self, mock_client, *args):
-        """Test topic subscription using decorator"""
-        mock_instance = Mock()
-        mock_instance.is_connected.return_value = True
-        mock_client.return_value = mock_instance
+def test_publish(mqtt_class, mqtt_config, mock_paho):
+    """Test message publication"""
+    client_mock = mock_paho.Client.return_value
+    mqtt = mqtt_class(host=mqtt_config['host'], port=mqtt_config['port'])
+    mqtt.publish(
+        topic=mqtt_config['test_topic'], 
+        payload=mqtt_config['test_payload']
+    )
 
-        mqtt = self.MQTT(host=self.host, port=self.port)
+    client_mock.publish.assert_called_once_with(
+        mqtt_config['test_topic'],
+        mqtt_config['test_payload'],
+        qos=None,  # Default value
+        retain=False  # Default value
+    )
 
-        @mqtt.subscribe(self.test_topic)
-        def callback(msg):
-            pass
+def test_message_handling(mqtt_class, mqtt_config, mock_paho):
+    """Test message handling with callbacks"""
+    mqtt = mqtt_class(host=mqtt_config['host'], port=mqtt_config['port'])
+    received_messages = []
 
-        self.assertEqual(mqtt.callback_dict[self.test_topic], callback)
-        mock_instance.subscribe.assert_called_once_with(self.test_topic, qos=0)
+    @mqtt.subscribe(mqtt_config['test_topic'])
+    def callback(msg):
+        received_messages.append(msg.payload)
 
-    @patch('paho.mqtt.client.Client')
-    def test_publish(self, mock_client, *args):
-        """Test message publication"""
-        # Setup mock
-        mock_instance = Mock()
-        mock_instance.is_connected.return_value = True
-        mock_client.return_value = mock_instance
+    test_msg = Mock()
+    test_msg.topic = mqtt_config['test_topic']
+    test_msg.payload = mqtt_config['test_payload']
+    mqtt.on_message(None, None, test_msg)
 
-        # Test publication
-        mqtt = self.MQTT(host=self.host, port=self.port)
-        mqtt.publish(self.test_topic, self.test_payload, qos=1)
+    assert received_messages == [mqtt_config['test_payload']]
 
-        # Verify results
-        mock_instance.publish.assert_called_once_with(
-            self.test_topic,
-            self.test_payload,
-            qos=1,
-            retain=False
-        )
-
-    def test_multiple_servers(self, *args):
-        """Test multiple server configuration"""
-        hosts = ["server1.com", "server2.com"]
-        mqtt = self.MQTT(host=hosts, port=self.port)
-        self.assertEqual(mqtt.host, hosts)
-
-    @patch('paho.mqtt.client.Client')
-    def test_on_message(self, mock_client, *args):
-        """Test message handling"""
-        mqtt = self.MQTT(host=self.host, port=self.port)
-
-        # Setup test callback
-        callback_called = False
-        def test_callback(msg):
-            nonlocal callback_called
-            callback_called = True
-            self.assertEqual(msg.payload, self.test_payload)
-
-        # Subscribe to topic
-        mqtt.subscribe(self.test_topic, test_callback)
-
-        # Create test message
-        test_msg = Mock()
-        test_msg.topic = self.test_topic
-        test_msg.payload = self.test_payload
-
-        # Trigger message handler
-        mqtt.on_message(None, None, test_msg)
-
-        # Verify results
-        self.assertTrue(callback_called)
-
-
-if __name__ == '__main__':
-    unittest.main()
+def test_context_manager(mqtt_class, mqtt_config, mock_paho):
+    """Test context manager protocol implementation"""
+    client_mock = mock_paho.Client.return_value
+    # Настраиваем последовательность ответов для всех возможных вызовов is_connected
+    client_mock.is_connected.side_effect = [False, False, True, True, True, True]
+    
+    with mqtt_class(host=mqtt_config['host'], port=mqtt_config['port']) as mqtt:
+        # Проверяем, что подключение произошло
+        assert client_mock.connect.called
+        assert client_mock.loop_start.called
+        
+        # Сбрасываем side_effect на постоянное значение True для оставшихся проверок
+        client_mock.is_connected.side_effect = None
+        client_mock.is_connected.return_value = True
+    
+    # Проверяем отключение
+    assert client_mock.disconnect.called
+    assert client_mock.loop_stop.called

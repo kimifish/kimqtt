@@ -70,12 +70,17 @@ class MQTT:
         # Skip initialization if already initialized
         if self._initialized:
             return
-            
+        
         if not host:
             raise ValueError("Host must be set")
         if isinstance(host, str):
             host = [host]
-            
+        
+        if not isinstance(port, int):
+            raise TypeError("Port must be an integer")
+        if port <= 0 or port > 65535:
+            raise ValueError("Port must be between 1 and 65535")
+        
         # If TLS is enabled but port is default, use SSL port
         if use_tls and port == DEFAULT_PORT:
             port = DEFAULT_SSL_PORT
@@ -205,8 +210,8 @@ class MQTT:
         return self.client.is_connected()
 
     def disconnect(self):
-        """Safely disconnect from the broker"""
-        if self.client and self.client.is_connected():
+        """Disconnect from the MQTT broker."""
+        if hasattr(self, 'client') and self.client and self.client.is_connected():
             self.client.disconnect()
             self.client.loop_stop()
             self.connected = False
@@ -308,9 +313,18 @@ class MQTT:
         self.client.loop_stop()
 
     def __enter__(self):
-        self.connect()
+        """Context manager entry - ensures connection to broker"""
+        if not self.client.is_connected():
+            self.connect()
         return self
-        
+
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.disconnect()
+        """Context manager exit - ensures clean disconnect"""
+        try:
+            if self.client and self.client.is_connected():
+                self.client.disconnect()
+                self.client.loop_stop()
+        except Exception:
+            pass  # Ensure we don't hang on cleanup
+        return False  # Don't suppress exceptions
 
