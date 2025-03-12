@@ -6,6 +6,7 @@
 - Simplified Singleton implementation in MQTT class
 - Unified project configuration in pyproject.toml
 - Removed redundant setup.py configuration
+- Added support for decorator-based topic subscription
 
 ## [0.1.4] - 2024-03-15
 
