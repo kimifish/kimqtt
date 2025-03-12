@@ -7,14 +7,11 @@ setup(
     package_dir={'': 'src'},
     install_requires=[
         'paho-mqtt',
+        'kimiutils',
     ],
     extras_require={
         'dev': [
             'pytest',
-        ],
-    },
-    entry_points={
-        'console_scripts': [
         ],
     },
 )

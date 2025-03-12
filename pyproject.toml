@@ -3,3 +3,15 @@ name = "kimqtt"
 version = "0.1.4"
 description = "Simple and convenient MQTT client library"
 authors = ["kimifish <kimifish@proton.me>"]
+packages = [
+    { include = "mqtt.py", from = "src" },
+    { include = "__init__.py", from = "src" },
+]
+
+[tool.poetry.dependencies]
+python = ">=3.8"
+paho-mqtt = "*"
+kimiutils = "*"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^7.0"

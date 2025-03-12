@@ -6,7 +6,6 @@ import ssl
 import logging
 
 from kimiUtils.utils import Singleton
-from kimiUtils.logs import get_logger
 
 # Constants
 DEFAULT_PORT = 1883

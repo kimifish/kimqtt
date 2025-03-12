@@ -21,7 +21,7 @@ class TestMQTT(unittest.TestCase):
     def setUp(self):
         """Reset singleton instance before each test"""
         # Import MQTT here after patches are applied
-        from src.kiMQTT.mqtt import MQTT
+        from mqtt import MQTT
         self.MQTT = MQTT
         self.MQTT._instances = {}
         self.host = "test.mosquitto.org"
