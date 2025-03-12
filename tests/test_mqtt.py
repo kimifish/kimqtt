@@ -89,21 +89,34 @@ class TestMQTT(unittest.TestCase):
         mock_sleep.assert_any_call(1)
 
     @patch('paho.mqtt.client.Client')
-    def test_subscribe(self, mock_client, *args):
-        """Test topic subscription"""
-        # Setup mock
+    def test_subscribe_as_method(self, mock_client, *args):
+        """Test topic subscription using regular method"""
         mock_instance = Mock()
         mock_instance.is_connected.return_value = True
         mock_client.return_value = mock_instance
 
-        # Test subscription
         mqtt = self.MQTT(host=self.host, port=self.port)
         def callback(msg):
             pass
 
         mqtt.subscribe(self.test_topic, callback)
 
-        # Verify results
+        self.assertEqual(mqtt.callback_dict[self.test_topic], callback)
+        mock_instance.subscribe.assert_called_once_with(self.test_topic, qos=0)
+
+    @patch('paho.mqtt.client.Client')
+    def test_subscribe_as_decorator(self, mock_client, *args):
+        """Test topic subscription using decorator"""
+        mock_instance = Mock()
+        mock_instance.is_connected.return_value = True
+        mock_client.return_value = mock_instance
+
+        mqtt = self.MQTT(host=self.host, port=self.port)
+
+        @mqtt.subscribe(self.test_topic)
+        def callback(msg):
+            pass
+
         self.assertEqual(mqtt.callback_dict[self.test_topic], callback)
         mock_instance.subscribe.assert_called_once_with(self.test_topic, qos=0)
 

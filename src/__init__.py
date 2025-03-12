@@ -12,7 +12,7 @@ Features:
 
 from .mqtt import MQTT
 
-__version__ = '0.1.4'
+__version__ = '0.1.5'
 __author__ = 'kimifish'
 __email__ = 'kimifish@proton.me'
 __license__ = 'MIT'

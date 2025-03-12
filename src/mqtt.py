@@ -5,8 +5,6 @@ from paho.mqtt.client import MQTTMessage
 import ssl
 import logging
 
-from kimiUtils.utils import Singleton
-
 # Constants
 DEFAULT_PORT = 1883
 DEFAULT_SSL_PORT = 8883
@@ -19,7 +17,7 @@ log = logging.getLogger(__name__)
 
 PayloadType = Union[str, int, float, bytes]
 
-class MQTT(metaclass=Singleton):
+class MQTT:
     """
     MQTT client implementation with Singleton pattern.
     Provides high-level interface for MQTT broker interaction.
@@ -31,9 +29,16 @@ class MQTT(metaclass=Singleton):
     - QoS levels support
     - Callback-based message handling
     """
+    _instance = None
+    _initialized = False
+
+    def __new__(cls, *args, **kwargs):
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
 
     def __init__(self, 
-                 host: Union[str, List[str]],
+                 host: Union[str, List[str]] = None,
                  port: int = DEFAULT_PORT,
                  client_id: Optional[str] = None,
                  keepalive: int = DEFAULT_KEEPALIVE,
@@ -62,6 +67,10 @@ class MQTT(metaclass=Singleton):
             tls_insecure: Allow insecure TLS (not recommended for production)
             connect_on_init: Whether to connect immediately after initialization
         """
+        # Skip initialization if already initialized
+        if self._initialized:
+            return
+            
         if not host:
             raise ValueError("Host must be set")
         if isinstance(host, str):
@@ -97,6 +106,8 @@ class MQTT(metaclass=Singleton):
 
         if connect_on_init:
             self.connect()
+            
+        self._initialized = True
 
     def _setup_client(self, client_id: Optional[str] = None):
         """Setup MQTT client with TLS and authentication"""
@@ -223,21 +234,40 @@ class MQTT(metaclass=Singleton):
         self.client.publish(topic, payload, qos=qos, retain=retain)
         log.debug(f"Published to {topic}: {payload}")
 
-    def subscribe(self, topic: str, callback: Callable[[MQTTMessage], None], qos: int = DEFAULT_QOS):
+    def subscribe(self, topic: str, callback: Callable[[MQTTMessage], None] = None, qos: int = DEFAULT_QOS):
         """
-        Subscribe to a topic.
+        Subscribe to a topic. Can be used as a decorator or regular method.
         
         Args:
             topic: Topic to subscribe to
-            callback: Message handler function
+            callback: Message handler function (optional when used as decorator)
             qos: Quality of Service level
+
+        Examples:
+            # As a regular method:
+            def handler(msg):
+                print(msg.payload)
+            client.subscribe("topic/#", handler)
+
+            # As a decorator:
+            @client.subscribe("topic/#")
+            def handler(msg):
+                print(msg.payload)
         """
-        self.callback_dict[topic] = callback
-        if self.client and self.client.is_connected():
-            self.client.subscribe(topic, qos=qos)
-            log.debug(f'Topic subscribed: {topic} → {callback.__qualname__}')
+        def decorator(handler: Callable[[MQTTMessage], None]):
+            self.callback_dict[topic] = handler
+            if self.client and self.client.is_connected():
+                self.client.subscribe(topic, qos=qos)
+                log.debug(f'Topic subscribed: {topic} → {handler.__qualname__}')
+            return handler
+
+        if callback is None:
+            # Used as decorator
+            return decorator
         else:
-            log.info('MQTT not connected. Topic will be subscribed after connection.')
+            # Used as regular method
+            decorator(callback)
+            return callback
 
     def _subscribe_all_topics(self):
         """Resubscribe to all topics"""

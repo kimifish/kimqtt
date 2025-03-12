@@ -1,17 +1,26 @@
-[tool.poetry]
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
 name = "kimqtt"
-version = "0.1.4"
+version = "0.1.5"
 description = "Simple and convenient MQTT client library"
-authors = ["kimifish <kimifish@proton.me>"]
-packages = [
-    { include = "mqtt.py", from = "src" },
-    { include = "__init__.py", from = "src" },
+authors = [
+    {name = "kimifish", email = "kimifish@proton.me"}
+]
+requires-python = ">=3.8"
+dependencies = [
+    "paho-mqtt",
+]
+readme = "README.md"
+license = {text = "MIT"}
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
 ]
 
-[tool.poetry.dependencies]
-python = ">=3.8"
-paho-mqtt = "*"
-kimiutils = "*"
-
-[tool.poetry.group.dev.dependencies]
-pytest = "^7.0"
+[tool.setuptools]
+package-dir = {"" = "src"}
+packages = ["kimqtt"]

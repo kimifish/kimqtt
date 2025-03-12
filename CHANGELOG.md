@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.5] - 2024-03-15
+
+### Changed
+- Simplified Singleton implementation in MQTT class
+- Unified project configuration in pyproject.toml
+- Removed redundant setup.py configuration
+
 ## [0.1.4] - 2024-03-15
 
 ### Added
