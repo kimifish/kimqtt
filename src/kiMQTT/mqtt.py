@@ -2,6 +2,7 @@ import time
 from typing import Optional, Union, List, Callable, Dict
 import paho.mqtt.client
 from paho.mqtt.client import MQTTMessage
+import ssl
 import logging
 
 from kimiUtils.utils import Singleton
@@ -9,6 +10,7 @@ from kimiUtils.logs import get_logger
 
 # Constants
 DEFAULT_PORT = 1883
+DEFAULT_SSL_PORT = 8883
 DEFAULT_KEEPALIVE = 60
 DEFAULT_QOS = 0
 DEFAULT_RECONNECT_DELAY = 5
@@ -39,30 +41,48 @@ class MQTT(metaclass=Singleton):
                  username: Optional[str] = None,
                  password: Optional[str] = None,
                  use_tls: bool = False,
+                 ca_certs: Optional[str] = None,
+                 certfile: Optional[str] = None,
+                 keyfile: Optional[str] = None,
+                 tls_insecure: bool = False,
                  connect_on_init: bool = False):
         """
-        Initialize MQTT client.
+        Initialize MQTT client with TLS and authentication support.
         
         Args:
             host: String or list of strings with MQTT broker addresses
-            port: Port number for connection
+            port: Port number for connection (default: 1883, SSL: 8883)
             client_id: Client identifier
             keepalive: Keep alive interval in seconds
             username: Username for authentication
             password: Password for authentication
             use_tls: Whether to use TLS for connection
+            ca_certs: Path to CA certificate file
+            certfile: Path to client certificate file
+            keyfile: Path to client private key file
+            tls_insecure: Allow insecure TLS (not recommended for production)
             connect_on_init: Whether to connect immediately after initialization
         """
         if not host:
             raise ValueError("Host must be set")
         if isinstance(host, str):
             host = [host]
+            
+        # If TLS is enabled but port is default, use SSL port
+        if use_tls and port == DEFAULT_PORT:
+            port = DEFAULT_SSL_PORT
+            
         self.host = host
         self.port = port
         self.keepalive = keepalive
         self.username = username
         self.password = password
         self.use_tls = use_tls
+        self.ca_certs = ca_certs
+        self.certfile = certfile
+        self.keyfile = keyfile
+        self.tls_insecure = tls_insecure
+        
         self.callback_dict: Dict[str, Callable] = {}
         self.client = None
         self.connected = False
@@ -80,14 +100,17 @@ class MQTT(metaclass=Singleton):
             self.connect()
 
     def _setup_client(self, client_id: Optional[str] = None):
-        """Setup MQTT client with necessary callbacks and settings"""
+        """Setup MQTT client with TLS and authentication"""
         try:
             from paho.mqtt.enums import CallbackAPIVersion
-            self.client = paho.mqtt.client.Client(client_id=client_id, callback_api_version=CallbackAPIVersion.VERSION2)
+            self.client = paho.mqtt.client.Client(
+                client_id=client_id, 
+                callback_api_version=CallbackAPIVersion.VERSION2
+            )
         except AttributeError:
             self.client = paho.mqtt.client.Client(client_id=client_id)
         except Exception as e:
-            log.error(e)
+            log.error(f"Failed to create MQTT client: {e}")
             return
 
         # Set callbacks
@@ -97,12 +120,32 @@ class MQTT(metaclass=Singleton):
         self.client.on_disconnect = self.on_disconnect
 
         # Setup authentication if provided
-        if self.username and self.password:
+        if self.username:
             self.client.username_pw_set(self.username, self.password)
 
         # Setup TLS if required
         if self.use_tls:
-            self.client.tls_set()
+            try:
+                if self.ca_certs:
+                    # Setup TLS with certificates
+                    self.client.tls_set(
+                        ca_certs=self.ca_certs,
+                        certfile=self.certfile,
+                        keyfile=self.keyfile,
+                        cert_reqs=ssl.CERT_REQUIRED if not self.tls_insecure else ssl.CERT_NONE,
+                        tls_version=ssl.PROTOCOL_TLS_CLIENT,
+                    )
+                else:
+                    # Setup TLS with default system certificates
+                    self.client.tls_set()
+                
+                if self.tls_insecure:
+                    self.client.tls_insecure_set(True)
+                    log.warning("TLS verification is disabled - not recommended for production use")
+                    
+            except Exception as e:
+                log.error(f"Failed to setup TLS: {e}")
+                raise
 
     def connect(self) -> bool:
         """
