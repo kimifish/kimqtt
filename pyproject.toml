@@ -22,5 +22,5 @@ dev = [
 ]
 
 [tool.setuptools]
+py-modules = ["mqtt"]
 package-dir = {"" = "src"}
-packages = ["kimqtt"]
